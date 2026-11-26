@@ -1,0 +1,8 @@
+FROM postgres:16
+COPY caeru-gbrain-runtime /usr/local/bin/gbrain
+COPY gbrain-entrypoint.sh /usr/local/bin/caeru-entrypoint
+RUN chmod 755 /usr/local/bin/gbrain /usr/local/bin/caeru-entrypoint && mkdir -p /data && chown postgres:postgres /data
+USER postgres
+ENV GBRAIN_HOME=/data
+EXPOSE 3131
+ENTRYPOINT ["/usr/local/bin/caeru-entrypoint"]

@@ -1,0 +1,21 @@
+import { afterAll, expect, test } from 'bun:test';
+import { randomUUID } from 'node:crypto';
+import { PrismaClient } from '@prisma/client';
+import { PrismaProvisionStore } from '../src/provisioning/prisma-store';
+import { openToken } from '../src/provisioning/secrets';
+const db=new PrismaClient();const suffix=randomUUID();const orgId='p-'+suffix;const brainId=randomUUID();const key=Buffer.alloc(32,9);
+test('claims only once, recovers expired leases and never accepts a stale completion',async()=>{
+ await db.organization.create({data:{id:orgId,name:'Synthetic org',slug:orgId,createdAt:new Date()}});
+ await db.brain.create({data:{id:brainId,name:'Synthetic brain',organizationId:orgId,instance:{create:{}}}});
+ const store=new PrismaProvisionStore(db,key);const until=new Date(Date.now()+60_000);
+ const results=await Promise.all([store.claim('a',until),store.claim('b',until)]);
+ expect(results.filter(Boolean)).toHaveLength(1);
+ const first=results[0]?'a':'b';
+ await db.brainInstance.update({where:{brainId},data:{leaseUntil:new Date(Date.now()-1)}});
+ expect((await store.claim('next',until))?.id).toBe(brainId);
+ expect(await store.complete(brainId,first,{port:1234,token:'fixture'})).toBe(false);
+ expect(await store.complete(brainId,'next',{port:1234,token:'fixture'})).toBe(true);
+ const saved=await db.brainInstance.findUniqueOrThrow({where:{brainId}});
+ expect(saved.status).toBe('READY');expect(saved.encryptedMcpToken).not.toContain('fixture');expect(openToken(key,saved.encryptedMcpToken!)).toBe('fixture');
+});
+afterAll(async()=>{await db.organization.deleteMany({where:{id:orgId}});await db.$disconnect()});

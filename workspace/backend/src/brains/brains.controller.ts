@@ -1,15 +1,17 @@
-import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Patch, Post, Query, BadRequestException } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Patch, Post, Query, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { Session, type UserSession } from '@thallesp/nestjs-better-auth';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../auth';
 import { canAccessBrain, type BrainRole } from './authorization';
+import { GBrainAdapter } from '../provisioning/gbrain-client';
+import { openToken, provisionKey } from '../provisioning/secrets';
 
 const fields = { name: z.string().trim().min(1).max(100), description: z.string().trim().max(2000).optional() };
 const createSchema = z.object({ ...fields, organizationId: z.string().min(1) }).strict();
 const updateSchema = z.object(fields).strict();
 const memberSchema = z.object({ userId: z.string().min(1), role: z.enum(['ADMIN', 'EDITOR', 'VIEWER']) }).strict();
-const view = { id: true, name: true, description: true, organizationId: true, createdAt: true, instance: { select: { status: true } } } as const;
+const view = { id: true, name: true, description: true, organizationId: true, createdAt: true, instance: { select: { status: true, lastError: true } } } as const;
 function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);
   if (!result.success) throw new BadRequestException('Dados inválidos');
@@ -42,12 +44,31 @@ export class BrainsController {
   @Get(':id')
   async get(@Session() session: UserSession, @Param('id') id: string) {
     const brain = await this.access(id, session.user.id, 'VIEWER');
-    return { id: brain.id, name: brain.name, description: brain.description, organizationId: brain.organizationId, instance: brain.instance && { status: brain.instance.status }, role: brain.members[0].role };
+    return { id: brain.id, name: brain.name, description: brain.description, organizationId: brain.organizationId, instance: brain.instance && { status: brain.instance.status, lastError: brain.instance.lastError }, role: brain.members[0].role };
   }
   @Patch(':id')
   async update(@Session() session: UserSession, @Param('id') id: string, @Body() body: unknown) {
     await this.access(id, session.user.id, 'ADMIN');
     return prisma.brain.update({ where: { id }, data: parse(updateSchema, body), select: view });
+  }
+  @Post(':id/provision')
+  async retryProvision(@Session() session: UserSession, @Param('id') id: string) {
+    await this.access(id, session.user.id, 'ADMIN');
+    await prisma.brainInstance.updateMany({ where: { brainId:id, status: { in: ['FAILED', 'STOPPED'] } }, data: { status:'PENDING', lastError:null } });
+    return prisma.brainInstance.findUnique({ where: { brainId:id }, select: { status:true, lastError:true } });
+  }
+  @Get(':id/health')
+  async health(@Session() session: UserSession, @Param('id') id: string) {
+    const brain=await this.access(id,session.user.id,'VIEWER');
+    if(brain.instance?.status!=='READY'||!brain.instance.endpointPort||!brain.instance.encryptedMcpToken) return {status:brain.instance?.status??'PENDING',healthy:false};
+    try {const token=openToken(provisionKey(),brain.instance.encryptedMcpToken);return {status:brain.instance.status,healthy:await new GBrainAdapter().healthy({port:brain.instance.endpointPort,token})}} catch {return {status:brain.instance.status,healthy:false}}
+  }
+  @Get(':id/search')
+  async search(@Session() session: UserSession, @Param('id') id: string, @Query('q') query: string) {
+    const brain=await this.access(id,session.user.id,'VIEWER');
+    const q=z.string().trim().min(1).max(500).safeParse(query);if(!q.success)throw new BadRequestException('Pesquisa inválida');
+    if(brain.instance?.status!=='READY'||!brain.instance.endpointPort||!brain.instance.encryptedMcpToken)throw new ServiceUnavailableException('O Brain ainda não está disponível.');
+    try {const token=openToken(provisionKey(),brain.instance.encryptedMcpToken);return await new GBrainAdapter().call({port:brain.instance.endpointPort,token},'search',{query:q.data,match:'keyword',limit:20})} catch {throw new ServiceUnavailableException('Não foi possível acessar o Brain.')}
   }
   @Get(':id/members')
   async members(@Session() session: UserSession, @Param('id') id: string) {
