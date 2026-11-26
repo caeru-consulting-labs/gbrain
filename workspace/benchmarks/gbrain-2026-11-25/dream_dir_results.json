@@ -1,0 +1,16 @@
+{
+  "exit": 0,
+  "seconds": 5.0,
+  "processes": {
+    "server": {
+      "rss_peak_mib": 162.7,
+      "pss_peak_mib": 137.7,
+      "cpu_percent_mean": 0.6
+    },
+    "dream": {
+      "rss_peak_mib": 186.0,
+      "pss_peak_mib": 153.8,
+      "cpu_percent_mean": 56.4
+    }
+  }
+}

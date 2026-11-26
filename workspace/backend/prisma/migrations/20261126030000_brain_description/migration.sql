@@ -1,0 +1,1 @@
+ALTER TABLE "Brain" ADD COLUMN "description" TEXT NOT NULL DEFAULT '';
